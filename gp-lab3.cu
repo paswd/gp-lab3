@@ -5,14 +5,13 @@
 #include <cstdlib>
 #include <ctime>
 #include <vector>
-#include "../lib/cuPrintf.cu"
+//#include "../lib/cuPrintf.cu"
 
 using namespace std;
 
-const uint32_t COUNTING_SORT_BASE = 256;
 const uint32_t BLOCK_DIM = 32;
 const uint32_t MAX_CLASS_COUNT = 32;
-const uint32_t MAX_CLASS_ELEMENTS_COUNT = 524288;
+//const uint32_t MAX_CLASS_ELEMENTS_COUNT = 524288;
 
 namespace Pixel {
 	//const uint32_t ELEMENTS_CNT = 4;
@@ -145,11 +144,11 @@ DEVICE
 
 __device__ float GetMinDist(Position pos, uint8_t j) {
 	ModifiedPixel px_bas = ConvertPixelToModified(tex2D(OriginalImage, pos.X, pos.Y));
-	cuPrintf("%f:%f:%f\n", px_bas.Red, px_bas.Green, px_bas.Blue);
-	cuPrintf("%f:%f:%f\n", ClassAVG[j].Red, ClassAVG[j].Green, ClassAVG[j].Blue);
+	//cuPrintf("%f:%f:%f\n", px_bas.Red, px_bas.Green, px_bas.Blue);
+	//cuPrintf("%f:%f:%f\n", ClassAVG[j].Red, ClassAVG[j].Green, ClassAVG[j].Blue);
 
 	PixelDiff(px_bas, ClassAVG[j]);
-	cuPrintf("%f:%f:%f\n", px_bas.Red, px_bas.Green, px_bas.Blue);
+	//cuPrintf("%f:%f:%f\n", px_bas.Red, px_bas.Green, px_bas.Blue);
 	return PixelMult(px_bas, PixelMinus(px_bas));
 }
 
@@ -167,7 +166,7 @@ __device__ void SetClass(Position pos, uint32_t *map_out, uint32_t height, uint3
 			continue;
 		}
 
-		cuPrintf("j: %d\nMax: %f\nCurr: %f\n", j, max_val, GetMinDist(pos, j));
+		//cuPrintf("j: %d\nMax: %f\nCurr: %f\n", j, max_val, GetMinDist(pos, j));
 
 		if (GetMinDist(pos, j) > max_val) {
 			max_val = GetMinDist(pos, j);
@@ -334,7 +333,6 @@ __host__ int main(void) {
 	//FileGeneratorTest();
 
 	string file_in, file_out;
-	uint32_t radius;
 	cin >> file_in >> file_out;
 	//cout << "FILE INIT COMPLETED" << endl;
 
