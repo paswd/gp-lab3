@@ -3,7 +3,7 @@
 #include <string>
 #include <cstdio>
 #include <cstdlib>
-#include <ctime>
+//#include <ctime>
 #include <vector>
 //#include "../lib/cuPrintf.cu"
 
@@ -38,13 +38,9 @@ struct ModifiedPixel {
 	float Blue;
 };
 
-texture<uint32_t, 2, cudaReadModeElementType> OriginalImage;
-//__constant__ Position class_map[MAX_CLASS_COUNT * MAX_CLASS_ELEMENTS_COUNT];
+//texture<uint32_t, 2, cudaReadModeElementType> OriginalImage;
 __constant__ uint8_t ClassCount[1];
-__constant__ uint32_t ClassMapElementsCounts[MAX_CLASS_COUNT];
-__constant__ uint32_t ClassMapElementsOffsets[MAX_CLASS_COUNT];
 __constant__ ModifiedPixel ClassAVG[MAX_CLASS_COUNT];
-texture<Position, 1, cudaReadModeElementType> ClassMap;
 
 /*
 ===========
@@ -56,7 +52,12 @@ DEVICE-HOST
 	return (.3 * (double) pixel.Red) + (.59 * (double) pixel.Green) + (.11 * (double) pixel.Blue);
 }*/
 
-
+__host__ __device__ Position SetPosition(int32_t x, int32_t y) {
+	Position pos;
+	pos.X = x;
+	pos.Y = y;
+	return pos;
+}
 
 __host__ __device__ ModifiedPixel SetModifiedPixel() {
 	ModifiedPixel res;
@@ -142,8 +143,8 @@ DEVICE
 ======
 */
 
-__device__ float GetMinDist(Position pos, uint8_t j) {
-	ModifiedPixel px_bas = ConvertPixelToModified(tex2D(OriginalImage, pos.X, pos.Y));
+__device__ float GetMinDist(uint32_t *map_in, Position pos, uint32_t height, uint32_t width, uint8_t j) {
+	ModifiedPixel px_bas = ConvertPixelToModified(map_in[GetLinearizedPosition(pos, height, width)]);
 	//cuPrintf("%f:%f:%f\n", px_bas.Red, px_bas.Green, px_bas.Blue);
 	//cuPrintf("%f:%f:%f\n", ClassAVG[j].Red, ClassAVG[j].Green, ClassAVG[j].Blue);
 
@@ -152,15 +153,16 @@ __device__ float GetMinDist(Position pos, uint8_t j) {
 	return PixelMult(px_bas, PixelMinus(px_bas));
 }
 
-__device__ void SetClass(Position pos, uint32_t *map_out, uint32_t height, uint32_t width) {
+__device__ void SetClass(Position pos, uint32_t *map_in, uint32_t height, uint32_t width) {
 	uint8_t class_number = 0;
 	float max_val = 0.;
 	uint8_t is_defined = 0;
 	//cuPrintf("ClassCount = %d\n", (uint32_t) ClassCount[0]);
-
+	//class_number = ClassCount[0];
+	//uint8_t j = 0;
 	for (uint8_t j = 0; j < ClassCount[0]; j++) {
 		if (!is_defined) {
-			max_val = GetMinDist(pos, j);
+			max_val = GetMinDist(map_in, pos, height, width, j);
 			class_number = j;
 			is_defined = 1;
 			continue;
@@ -168,17 +170,22 @@ __device__ void SetClass(Position pos, uint32_t *map_out, uint32_t height, uint3
 
 		//cuPrintf("j: %d\nMax: %f\nCurr: %f\n", j, max_val, GetMinDist(pos, j));
 
-		if (GetMinDist(pos, j) > max_val) {
-			max_val = GetMinDist(pos, j);
+		if (GetMinDist(map_in, pos, height, width, j) > max_val) {
+			max_val = GetMinDist(map_in, pos, height, width, j);
 			class_number = j;
 		}
 	}
+	//class_number = j;
 
 	//Class calculating
+	//class_number = 5;
 
-	map_out[GetLinearizedPosition(pos, height, width)] = tex2D(OriginalImage, pos.X, pos.Y);
-	map_out[GetLinearizedPosition(pos, height, width)] = SetPixelElement(
-		map_out[GetLinearizedPosition(pos, height, width)], Pixel::ALPHA, class_number);
+	map_in[GetLinearizedPosition(pos, height, width)] = map_in[GetLinearizedPosition(pos, height, width)];
+	map_in[GetLinearizedPosition(pos, height, width)] = SetPixelElement(
+		map_in[GetLinearizedPosition(pos, height, width)], Pixel::ALPHA, class_number);
+	//map_in[GetLinearizedPosition(pos, height, width)] = (uint32_t) class_number;
+	/*map_in[GetLinearizedPosition(pos, height, width)] = SetPixelElement(
+		map_in[GetLinearizedPosition(pos, height, width)], Pixel::ALPHA, class_number);*/
 }
 
 /*
@@ -187,7 +194,7 @@ GLOBAL
 ======
 */
 
-__global__ void Classificator(uint32_t height, uint32_t width, uint32_t *map_out) {
+__global__ void Classificator(uint32_t height, uint32_t width, uint32_t *map_in) {
 
 	Position start, offset;
 	start.X = blockIdx.x * blockDim.x + threadIdx.x;
@@ -201,7 +208,7 @@ __global__ void Classificator(uint32_t height, uint32_t width, uint32_t *map_out
 		for (pos.Y = start.Y; pos.Y < height; pos.Y += offset.Y) {
 			if (pos.X < width && pos.Y < height) {
 				//cuPrintf("\n%d:%d\n", pos.X, pos.Y);
-				SetClass(pos, map_out, height, width);
+				SetClass(pos, map_in, height, width);
 			}
 		}
 	}
@@ -212,6 +219,10 @@ __global__ void Classificator(uint32_t height, uint32_t width, uint32_t *map_out
 HOST
 ====
 */
+
+__host__ void PrintModifiedPixel(ModifiedPixel px) {
+	cout << px.Red << " " << px.Green << " " << px.Blue << endl;
+}
 
 __host__ void InitPixelMap(uint32_t **pixel, uint32_t height, uint32_t width) {
 	*pixel = new uint32_t[height * width];
@@ -286,17 +297,19 @@ __host__ void FileGenerator(string filename) {
 	WriteImageToFile(pixel, height, width, filename);
 	DestroyPixelMap(&pixel);
 }
-__host__ void FileGeneratorBig(uint32_t height, uint32_t width, string filename) {
+__host__ void FileGeneratorBig(uint32_t height, uint32_t width, uint32_t classes, string filename) {
 	uint32_t *pixel;
 	InitPixelMap(&pixel, height, width);
 
 	for (uint32_t i = 0; i < height; i++) {
 		for (uint32_t j = 0; j < width; j++) {
-			uint8_t curr;
-			if (i == 0 || j == 0 || i == height - 1 || j == width - 1) {
-				curr = 1;
-			} else {
-				curr = 3;
+			uint8_t curr = 255;
+			for (uint32_t k = 0; k < classes; k++) {
+				if ((i == k || j == k || i == height - 1 - k || j == width - 1 - k) &&
+					i >= k && j >= k && i <= height - 1 - k && j <= width - 1 - k) {
+					curr = k;
+					break;
+				}
 			}
 			pixel[i * width + j] = MakePixel(curr, curr, curr, 0);
 		}
@@ -316,9 +329,22 @@ __host__ ModifiedPixel GetAVG(uint8_t j, uint32_t *map_in, uint32_t height, uint
 	for (uint32_t i = class_elements_offsets[j];
 			i < class_elements_offsets[j] + class_elements_counts[j]; i++) {
 		//PixelSumm(res, ConvertPixelToModified(tex2D(OriginalImage, tex1D(ClassMap, i).X, tex1D(ClassMap, i).Y)));
-		PixelSumm(res, ConvertPixelToModified(map_in[GetLinearizedPosition(class_elements[i], height, width)]));
+		/*if (j == 0)
+			cout << class_elements[i].X << " " << class_elements[i].Y << endl;*/
+		ModifiedPixel curr = ConvertPixelToModified(map_in[GetLinearizedPosition(class_elements[i], height, width)]);
+		
+		PixelSumm(res, curr);
+		/*if (j == 0) {
+			cout << class_elements[i].X << ":" << class_elements[i].Y << endl; 
+			PrintModifiedPixel(curr);
+			PrintModifiedPixel(res);
+			cout << endl;
+		}*/
 	
 	}
+	/*if (j == 0) {
+		PrintModifiedPixel(res);
+	}*/
 	//printf("%f:%f:%f\n", res.Red, res.Green, res.Blue);
 	PixelMultNum(res, 1./((float) class_elements_counts[j]));
 	//printf("%f:%f:%f\n", res.Red, res.Green, res.Blue);
@@ -327,8 +353,8 @@ __host__ ModifiedPixel GetAVG(uint8_t j, uint32_t *map_in, uint32_t height, uint
 
 __host__ int main(void) {
 	//cout << "INIT" << endl;
-	srand(time(NULL));
-	//FileGeneratorBig(100, 100, "inbig.data");
+	//srand(time(NULL));
+	//FileGeneratorBig(4000, 1000, 32, "inbig.data");
 	//FileGenerator("inrand.data");
 	//FileGeneratorTest();
 
@@ -338,13 +364,17 @@ __host__ int main(void) {
 
 	//FileGenerator();
 	uint32_t *pixel_in;
-	uint32_t *pixel_out;
+	//uint32_t *pixel_out;
 	uint32_t height, width;
 
 	ReadImageFromFile(&pixel_in, &height, &width, file_in);
+	//uint32_t pos = GetLinearizedPosition(SetPosition(999, 1), height, width);
+	//uint32_t pix = pixel_in[pos];
+	/*cout << (uint32_t) GetPixelElement(pix, Pixel::RED) << " " << (uint32_t) GetPixelElement(pix, Pixel::GREEN) << " " <<
+			(uint32_t) GetPixelElement(pix, Pixel::BLUE) << " : " << pos << endl;*/
 	//cout << "READ IMAGE COMPLETED" << endl;
 
-	InitPixelMap(&pixel_out, height, width);
+	//InitPixelMap(&pixel_out, height, width);
 
 	uint32_t class_elements_counts[MAX_CLASS_COUNT];
 	uint32_t class_elements_offsets[MAX_CLASS_COUNT];
@@ -377,15 +407,17 @@ __host__ int main(void) {
 		}
 		class_elements_avg[i] = GetAVG(i, pixel_in, height, width, class_elements,
 			class_elements_counts, class_elements_offsets);
+		//PrintModifiedPixel(class_elements_avg[i]);
 		//printf("%f:%f:%f\n", class_elements_avg[i].Red, class_elements_avg[i].Green, class_elements_avg[i].Blue);
 
 	}
 	//cout << "INPUT END" << endl;
 
-	uint32_t *cuda_pixel_out;
+	uint32_t *cuda_pixel_in;
+	//uint32_t *cuda_pixel_out;
 
 	//Texture init begin
-	cudaArray *cuda_pixel_in;
+	/*cudaArray *cuda_pixel_in;
 	cudaChannelFormatDesc ch1 = cudaCreateChannelDesc<uint32_t>();
 	cudaMallocArray(&cuda_pixel_in, &ch1, width, height);
 	cudaMemcpyToArray(cuda_pixel_in, 0, 0, pixel_in, sizeof(uint32_t) * height * width, cudaMemcpyHostToDevice);
@@ -396,14 +428,14 @@ __host__ int main(void) {
 	OriginalImage.channelDesc = ch1;
 	OriginalImage.filterMode = cudaFilterModePoint;
 	OriginalImage.normalized = false;
-	cudaBindTextureToArray(OriginalImage, cuda_pixel_in, ch1);
+	cudaBindTextureToArray(OriginalImage, cuda_pixel_in, ch1);*/
 	//Texture init end
 
 	//Texture init begin
-	cudaArray *cuda_classmap;
+	/*cudaArray *cuda_classmap;
 	cudaChannelFormatDesc ch2 = cudaCreateChannelDesc<Position>();
-	cudaMallocArray(&cuda_classmap, &ch2, width, height);
-	cudaMemcpyToArray(cuda_classmap, 0, 0, pixel_in, sizeof(uint32_t) * height * width, cudaMemcpyHostToDevice);
+	cudaMallocArray(&cuda_classmap, &ch2, class_elements.size(), 1);
+	cudaMemcpyToArray(cuda_classmap, 0, 0, class_elements.data(), sizeof(Position) * class_elements.size(), cudaMemcpyHostToDevice);
 	
 	ClassMap.addressMode[0] = cudaAddressModeClamp;
 	ClassMap.addressMode[1] = cudaAddressModeClamp;
@@ -411,16 +443,19 @@ __host__ int main(void) {
 	ClassMap.channelDesc = ch2;
 	ClassMap.filterMode = cudaFilterModePoint;
 	ClassMap.normalized = false;
-	cudaBindTextureToArray(ClassMap, cuda_classmap, ch2);
+	cudaBindTextureToArray(ClassMap, cuda_classmap, ch2);*/
 	//Texture init end
 
-	cudaMemcpyToSymbol(ClassMapElementsCounts, class_elements_counts, sizeof(uint32_t) * class_count);
-	cudaMemcpyToSymbol(ClassMapElementsOffsets, class_elements_offsets, sizeof(uint32_t) * class_count);
+	//cudaMemcpyToSymbol(ClassMapElementsCounts, class_elements_counts, sizeof(uint32_t) * class_count);
+	//cudaMemcpyToSymbol(ClassMapElementsOffsets, class_elements_offsets, sizeof(uint32_t) * class_count);
 	cudaMemcpyToSymbol(ClassCount, &class_count, sizeof(uint8_t));
 	cudaMemcpyToSymbol(ClassAVG, class_elements_avg, sizeof(ModifiedPixel) * class_count);
-	cudaMalloc((void**) &cuda_pixel_out, sizeof(uint32_t) * width * height);
+	cudaMalloc((void**) &cuda_pixel_in, sizeof(uint32_t) * width * height);
+	//cudaMalloc((void**) &cuda_pixel_out, sizeof(uint32_t) * width * height);
 
-	dim3 threads_per_block(width, height);
+	cudaMemcpy(cuda_pixel_in, pixel_in, sizeof(uint32_t) * width * height, cudaMemcpyHostToDevice);
+
+	/*dim3 threads_per_block(width, height);
 	dim3 blocks_per_grid(1, 1);
 
 	if (height * width > BLOCK_DIM * BLOCK_DIM){
@@ -428,10 +463,10 @@ __host__ int main(void) {
 		threads_per_block.y = BLOCK_DIM;
 		blocks_per_grid.x = ceil((double) (width) / (double)(threads_per_block.x));
 		blocks_per_grid.y = ceil((double) (height) / (double)(threads_per_block.y));
-	}
+	}*/
 
 	//cudaPrintfInit();
-	Classificator<<<blocks_per_grid, threads_per_block>>>(height, width, cuda_pixel_out);
+	Classificator<<<dim3(32, 32), dim3(32, 32)>>>(height, width, cuda_pixel_in);
 	//cudaPrintfDisplay(stdout, true);
     //cudaPrintfEnd();
 
@@ -440,20 +475,21 @@ __host__ int main(void) {
 	cudaEventCreate(&syncEvent);
 	cudaEventRecord(syncEvent, 0);
 	cudaEventSynchronize(syncEvent);
+	//cout << "ERROR: " << cudaGetErrorString(cudaGetLastError()) << endl;
 
-	cudaMemcpy(pixel_out, cuda_pixel_out, sizeof(uint32_t) * width * height, cudaMemcpyDeviceToHost);
+	cudaMemcpy(pixel_in, cuda_pixel_in, sizeof(uint32_t) * width * height, cudaMemcpyDeviceToHost);
 
 	cudaEventDestroy(syncEvent);
 
-	cudaUnbindTexture(OriginalImage);
-	cudaFreeArray(cuda_pixel_in);
-	cudaFree(cuda_pixel_out);
+	//cudaUnbindTexture(OriginalImage);
+	//cudaFreeArray(cuda_pixel_in);
+	cudaFree(cuda_pixel_in);
+	//cudaFree(cuda_pixel_out);
 
-	WriteImageToFile(pixel_out, height, width, file_out);
+	WriteImageToFile(pixel_in, height, width, file_out);
 
 	DestroyPixelMap(&pixel_in);
-	DestroyPixelMap(&pixel_out);
+	//DestroyPixelMap(&pixel_out);
 
 	return 0;
 }
-
